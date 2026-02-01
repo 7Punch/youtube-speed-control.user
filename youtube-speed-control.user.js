@@ -3,9 +3,9 @@
 // @namespace    Tampermonkey Scripts
 // @match        *://www.youtube.com/*
 // @grant        none
-// @version      1.6.5
+// @version      1.6.6
 // @author       LQ He
-// @description  长按快捷键快速倍速播放（Z/Ctrl 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。
+// @description  长按快捷键快速倍速播放（Z/Ctrl/Option 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。
 // @license      MIT
 // @run-at       document-start
 // ==/UserScript==
@@ -19,6 +19,7 @@
         PRESET_SPEEDS: [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4],
         SPEED_KEY_Z: 2.0,
         SPEED_KEY_CTRL: 2.0,
+        SPEED_KEY_OPTION: 2.0,
         SPEED_KEY_RIGHT: 3.0,
         LONG_PRESS_DELAY: 200,
         SEEK_SECONDS: 5,
@@ -117,6 +118,12 @@
             checkInterval: null
         },
 
+        optionKeyState: {
+            isDown: false,
+            originalSpeed: 1.0,
+            checkInterval: null
+        },
+
         speedOptions: [0.5, 1, 1.25, 1.5, 1.75, 2, 2.5, 3],
         customSpeeds: [],
 
@@ -135,6 +142,14 @@
             if (this.ctrlKeyState.checkInterval) {
                 clearInterval(this.ctrlKeyState.checkInterval);
                 this.ctrlKeyState.checkInterval = null;
+            }
+        },
+
+        resetOptionState() {
+            this.optionKeyState.isDown = false;
+            if (this.optionKeyState.checkInterval) {
+                clearInterval(this.optionKeyState.checkInterval);
+                this.optionKeyState.checkInterval = null;
             }
         }
     };
@@ -398,7 +413,7 @@
 
         // 检查是否是有效的快捷键
         isValidKey(code) {
-            return code === 'KeyZ' || code === 'ControlLeft' || code === 'ControlRight' || code === 'ArrowRight';
+            return code === 'KeyZ' || code === 'ControlLeft' || code === 'ControlRight' || code === 'AltLeft' || code === 'AltRight' || code === 'ArrowRight';
         },
 
         // 恢复视频速度
@@ -409,6 +424,7 @@
             }
             StateManager.reset();
             StateManager.resetCtrlState();
+            StateManager.resetOptionState();
             OverlayModule.hide();
             SpeedControlModule.updateHighlight();
         },
@@ -425,9 +441,23 @@
             }
         },
 
+        // 检查Option键状态一致性
+        checkOptionKeyConsistency(e) {
+            if (StateManager.optionKeyState.isDown && !e.altKey &&
+                e.code !== 'AltLeft' && e.code !== 'AltRight') {
+                console.log('[YouTube倍速] 检测到Option键状态不一致，强制恢复');
+                const video = DOMCache.getVideo();
+                if (video && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
+                    this.restoreSpeed(video, StateManager.optionKeyState.originalSpeed);
+                }
+            }
+        },
+
         handleKeyDown(e) {
             // 检查Ctrl键状态一致性
             KeyboardModule.checkCtrlKeyConsistency(e);
+            // 检查Option键状态一致性
+            KeyboardModule.checkOptionKeyConsistency(e);
 
             if (!KeyboardModule.isValidKey(e.code) || KeyboardModule.shouldIgnoreEvent(e)) return;
 
@@ -475,6 +505,31 @@
 
                 // 启动Ctrl键状态检查
                 KeyboardModule.startCtrlKeyCheck();
+                return;
+            }
+
+            // Option键处理：立即触发倍速 + 轮询检查
+            if (e.code === 'AltLeft' || e.code === 'AltRight') {
+                e.preventDefault();
+                e.stopPropagation();
+
+                if (StateManager.isPressing) return;
+
+                StateManager.isPressing = true;
+                StateManager.isLongPress = true;
+                StateManager.currentKey = e.code;
+                StateManager.originalSpeed = video.playbackRate;
+                StateManager.optionKeyState.isDown = true;
+                StateManager.optionKeyState.originalSpeed = video.playbackRate;
+
+                console.log('[YouTube倍速] Option键按下，记录原始速度:', StateManager.originalSpeed);
+
+                video.playbackRate = CONFIG.SPEED_KEY_OPTION;
+                OverlayModule.show(CONFIG.SPEED_KEY_OPTION);
+                SpeedControlModule.updateHighlight();
+
+                // 启动Option键状态检查
+                KeyboardModule.startOptionKeyCheck();
                 return;
             }
 
@@ -534,6 +589,35 @@
             }, CONFIG.CTRL_CHECK_INTERVAL);
         },
 
+        // Option键状态检查（兜底机制）
+        startOptionKeyCheck() {
+            if (StateManager.optionKeyState.checkInterval) {
+                clearInterval(StateManager.optionKeyState.checkInterval);
+            }
+
+            let checkCount = 0;
+            StateManager.optionKeyState.checkInterval = setInterval(() => {
+                const video = DOMCache.getVideo();
+                if (!video) return;
+
+                checkCount++;
+
+                if (StateManager.optionKeyState.isDown && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
+                    if (checkCount % 10 === 0) {
+                        console.log('[YouTube倍速] Option键轮询检查中...', checkCount / 10, '秒');
+                    }
+
+                    if (checkCount > CONFIG.CTRL_TIMEOUT_LIMIT) {
+                        console.log('[YouTube倍速] Option键超时，强制恢复速度');
+                        KeyboardModule.restoreSpeed(video, StateManager.optionKeyState.originalSpeed);
+                    }
+                } else if (!StateManager.optionKeyState.isDown) {
+                    clearInterval(StateManager.optionKeyState.checkInterval);
+                    StateManager.optionKeyState.checkInterval = null;
+                }
+            }, CONFIG.CTRL_CHECK_INTERVAL);
+        },
+
         handleKeyUp(e) {
             // 检查Ctrl键是否通过其他按键松开事件检测到
             if (StateManager.ctrlKeyState.isDown && !e.ctrlKey) {
@@ -541,6 +625,16 @@
                 const video = DOMCache.getVideo();
                 if (video && video.playbackRate === CONFIG.SPEED_KEY_CTRL) {
                     KeyboardModule.restoreSpeed(video, StateManager.ctrlKeyState.originalSpeed);
+                }
+                return;
+            }
+
+            // 检查Option键是否通过其他按键松开事件检测到
+            if (StateManager.optionKeyState.isDown && !e.altKey) {
+                console.log('[YouTube倍速] 通过keyup事件检测到Option键已松开');
+                const video = DOMCache.getVideo();
+                if (video && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
+                    KeyboardModule.restoreSpeed(video, StateManager.optionKeyState.originalSpeed);
                 }
                 return;
             }
@@ -570,6 +664,16 @@
                 console.log('[YouTube倍速] Ctrl键松开');
                 const speedToRestore = StateManager.ctrlKeyState.originalSpeed || StateManager.originalSpeed;
                 if (video.playbackRate === CONFIG.SPEED_KEY_CTRL) {
+                    KeyboardModule.restoreSpeed(video, speedToRestore);
+                }
+                return;
+            }
+
+            // Option键松开处理
+            if (e.code === 'AltLeft' || e.code === 'AltRight') {
+                console.log('[YouTube倍速] Option键松开');
+                const speedToRestore = StateManager.optionKeyState.originalSpeed || StateManager.originalSpeed;
+                if (video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
                     KeyboardModule.restoreSpeed(video, speedToRestore);
                 }
                 return;
@@ -1303,6 +1407,13 @@
                     KeyboardModule.restoreSpeed(video, StateManager.ctrlKeyState.originalSpeed);
                 }
             }
+            if (StateManager.optionKeyState.isDown) {
+                console.log('[YouTube倍速] 窗口失焦，强制恢复Option键状态');
+                const video = DOMCache.getVideo();
+                if (video && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
+                    KeyboardModule.restoreSpeed(video, StateManager.optionKeyState.originalSpeed);
+                }
+            }
         },
 
         // 鼠标点击处理（检测Ctrl键卡住）
@@ -1315,6 +1426,18 @@
                         if (StateManager.ctrlKeyState.isDown && video.playbackRate === CONFIG.SPEED_KEY_CTRL) {
                             console.log('[YouTube倍速] Ctrl键可能卡住，尝试恢复');
                             KeyboardModule.restoreSpeed(video, StateManager.ctrlKeyState.originalSpeed);
+                        }
+                    }, 100);
+                }
+            }
+            if (StateManager.optionKeyState.isDown) {
+                const video = DOMCache.getVideo();
+                if (video && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
+                    console.log('[YouTube倍速] 检测到鼠标点击，检查Option键状态');
+                    setTimeout(() => {
+                        if (StateManager.optionKeyState.isDown && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
+                            console.log('[YouTube倍速] Option键可能卡住，尝试恢复');
+                            KeyboardModule.restoreSpeed(video, StateManager.optionKeyState.originalSpeed);
                         }
                     }, 100);
                 }
