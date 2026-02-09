@@ -3,7 +3,7 @@
 // @namespace    Tampermonkey Scripts
 // @match        *://www.youtube.com/*
 // @grant        none
-// @version      1.6.6
+// @version      1.6.7
 // @author       LQ He
 // @description  长按快捷键快速倍速播放（Z/Ctrl/Option 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。
 // @license      MIT
@@ -577,11 +577,7 @@
                     if (checkCount % 10 === 0) {
                         console.log('[YouTube倍速] Ctrl键轮询检查中...', checkCount / 10, '秒');
                     }
-
-                    if (checkCount > CONFIG.CTRL_TIMEOUT_LIMIT) {
-                        console.log('[YouTube倍速] Ctrl键超时，强制恢复速度');
-                        KeyboardModule.restoreSpeed(video, StateManager.ctrlKeyState.originalSpeed);
-                    }
+                    // 移除超时限制，允许无限期长按
                 } else if (!StateManager.ctrlKeyState.isDown) {
                     clearInterval(StateManager.ctrlKeyState.checkInterval);
                     StateManager.ctrlKeyState.checkInterval = null;
@@ -606,11 +602,7 @@
                     if (checkCount % 10 === 0) {
                         console.log('[YouTube倍速] Option键轮询检查中...', checkCount / 10, '秒');
                     }
-
-                    if (checkCount > CONFIG.CTRL_TIMEOUT_LIMIT) {
-                        console.log('[YouTube倍速] Option键超时，强制恢复速度');
-                        KeyboardModule.restoreSpeed(video, StateManager.optionKeyState.originalSpeed);
-                    }
+                    // 移除超时限制，允许无限期长按
                 } else if (!StateManager.optionKeyState.isDown) {
                     clearInterval(StateManager.optionKeyState.checkInterval);
                     StateManager.optionKeyState.checkInterval = null;
