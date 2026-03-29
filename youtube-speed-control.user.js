@@ -3,7 +3,7 @@
 // @namespace    Tampermonkey Scripts
 // @match        *://www.youtube.com/*
 // @grant        none
-// @version      1.6.7
+// @version      1.6.8
 // @author       LQ He
 // @description  长按快捷键快速倍速播放（Z/Ctrl/Option 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。
 // @license      MIT
@@ -39,19 +39,25 @@
     const STYLES = {
         OVERLAY: `
             position: absolute;
-            top: 10%;
+            top: 20px;
             left: 50%;
             transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.75);
-            color: #fff;
-            padding: 12px 28px;
-            border-radius: 30px;
-            font-size: 20px;
-            font-weight: 600;
-            z-index: 9999;
+            display: inline-flex;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.6);
+            color: rgb(238, 238, 238);
+            padding: 6px 16px;
+            border-radius: 18px;
+            font-size: 14px;
+            font-weight: 500;
+            line-height: 18.2px;
+            height: 32px;
+            box-sizing: border-box;
+            font-family: "YouTube Noto", Roboto, Arial, Helvetica, sans-serif;
+            -webkit-font-smoothing: antialiased;
+            white-space: nowrap;
             pointer-events: none;
-            font-family: 'YouTube Sans', 'Roboto', Arial, sans-serif;
-            backdrop-filter: blur(4px);
+            z-index: 9999;
         `,
         BUTTON_BASE: `
             cursor: pointer !important;
@@ -111,6 +117,7 @@
         isLongPress: false,
         keyDownTime: 0,
         overlayDiv: null,
+        wasPlayingBeforeLongPress: false,
 
         ctrlKeyState: {
             isDown: false,
@@ -131,6 +138,7 @@
             this.isPressing = false;
             this.isLongPress = false;
             this.currentKey = null;
+            this.wasPlayingBeforeLongPress = false;
             if (this.longPressTimer) {
                 clearTimeout(this.longPressTimer);
                 this.longPressTimer = null;
@@ -382,18 +390,61 @@
 
     // ==================== 倍速提示覆盖层模块 ====================
     const OverlayModule = {
+        // 备选方案：原生 SVG 失效时显示此文字图标
+        FAST_FORWARD_SVG: '▶▶',
+
+        // 用 DOM API 创建与原生 .ytp-speedmaster-icon 完全一致的 SVG，绕过 Trusted Types CSP
+        // 若创建失败则返回 null，由 show() 降级为 FAST_FORWARD_SVG
+        createIcon() {
+            try {
+                const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                svg.setAttribute('fill', 'currentColor');
+                svg.setAttribute('viewBox', '0 0 36 36');
+                svg.setAttribute('width', '24');
+                svg.setAttribute('height', '24');
+                svg.style.cssText = 'display:block;flex-shrink:0;margin-left:4px';
+
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                path.setAttribute('d', 'M 10.00 13.37 v 9.24 c .00 1.12 1.15 1.76 1.98 1.11 L 18.33 18.66 v 3.95 c .00 1.12 1.15 1.77 1.98 1.11 L 27.50 18.00 l -7.18 -5.73 C 19.49 11.60 18.33 12.25 18.33 13.37 v 3.95 l -6.34 -5.06 C 11.15 11.60 10.00 12.25 10.00 13.37 Z');
+                svg.appendChild(path);
+                // 验证 SVG 是否有效（pathLength > 0 说明 path 正常解析）
+                if (!svg.querySelector('path')) throw new Error('SVG path missing');
+                return svg;
+            } catch (e) {
+                return null;
+            }
+        },
+
         show(speed) {
             const player = DOMCache.getPlayer();
             if (!player) return;
 
-            if (!StateManager.overlayDiv) {
+            if (!StateManager.overlayDiv || !document.contains(StateManager.overlayDiv)) {
                 StateManager.overlayDiv = document.createElement('div');
                 StateManager.overlayDiv.id = 'yt-speed-overlay';
                 StateManager.overlayDiv.style.cssText = STYLES.OVERLAY;
                 player.appendChild(StateManager.overlayDiv);
             }
-            StateManager.overlayDiv.textContent = `${speed}x ▶▶`;
-            StateManager.overlayDiv.style.display = 'block';
+
+            // 用 DOM API 代替 innerHTML，绕过 YouTube 的 Trusted Types CSP 限制
+            StateManager.overlayDiv.textContent = '';
+            const textSpan = document.createElement('span');
+            textSpan.textContent = `${speed}x`;
+            textSpan.style.cssText = 'display:flex;margin:0;padding:0;';
+            StateManager.overlayDiv.appendChild(textSpan);
+
+            // 优先使用原生 SVG，失败时降级为 FAST_FORWARD_SVG 文字
+            const icon = OverlayModule.createIcon();
+            if (icon) {
+                StateManager.overlayDiv.appendChild(icon);
+            } else {
+                const fallback = document.createElement('span');
+                fallback.textContent = OverlayModule.FAST_FORWARD_SVG;
+                fallback.style.marginLeft = '4px';
+                StateManager.overlayDiv.appendChild(fallback);
+            }
+
+            StateManager.overlayDiv.style.display = 'inline-flex';
         },
 
         hide() {
@@ -420,7 +471,10 @@
         restoreSpeed(video, speed) {
             if (video) {
                 video.playbackRate = speed;
-                console.log('[YouTube倍速] 恢复速度到:', speed);
+                // 若长按前视频处于暂停状态，松开后重新暂停
+                if (StateManager.wasPlayingBeforeLongPress === false) {
+                    video.pause();
+                }
             }
             StateManager.reset();
             StateManager.resetCtrlState();
@@ -433,7 +487,6 @@
         checkCtrlKeyConsistency(e) {
             if (StateManager.ctrlKeyState.isDown && !e.ctrlKey &&
                 e.code !== 'ControlLeft' && e.code !== 'ControlRight') {
-                console.log('[YouTube倍速] 检测到Ctrl键状态不一致，强制恢复');
                 const video = DOMCache.getVideo();
                 if (video && video.playbackRate === CONFIG.SPEED_KEY_CTRL) {
                     this.restoreSpeed(video, StateManager.ctrlKeyState.originalSpeed);
@@ -445,7 +498,6 @@
         checkOptionKeyConsistency(e) {
             if (StateManager.optionKeyState.isDown && !e.altKey &&
                 e.code !== 'AltLeft' && e.code !== 'AltRight') {
-                console.log('[YouTube倍速] 检测到Option键状态不一致，强制恢复');
                 const video = DOMCache.getVideo();
                 if (video && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
                     this.restoreSpeed(video, StateManager.optionKeyState.originalSpeed);
@@ -475,8 +527,9 @@
                 StateManager.isLongPress = true;
                 StateManager.currentKey = e.code;
                 StateManager.originalSpeed = video.playbackRate;
-                console.log('[YouTube倍速] Z键按下，记录原始速度:', StateManager.originalSpeed);
+                StateManager.wasPlayingBeforeLongPress = !video.paused;
 
+                if (video.paused) video.play();
                 video.playbackRate = CONFIG.SPEED_KEY_Z;
                 OverlayModule.show(CONFIG.SPEED_KEY_Z);
                 SpeedControlModule.updateHighlight();
@@ -494,11 +547,11 @@
                 StateManager.isLongPress = true;
                 StateManager.currentKey = e.code;
                 StateManager.originalSpeed = video.playbackRate;
+                StateManager.wasPlayingBeforeLongPress = !video.paused;
                 StateManager.ctrlKeyState.isDown = true;
                 StateManager.ctrlKeyState.originalSpeed = video.playbackRate;
 
-                console.log('[YouTube倍速] Ctrl键按下，记录原始速度:', StateManager.originalSpeed);
-
+                if (video.paused) video.play();
                 video.playbackRate = CONFIG.SPEED_KEY_CTRL;
                 OverlayModule.show(CONFIG.SPEED_KEY_CTRL);
                 SpeedControlModule.updateHighlight();
@@ -519,11 +572,11 @@
                 StateManager.isLongPress = true;
                 StateManager.currentKey = e.code;
                 StateManager.originalSpeed = video.playbackRate;
+                StateManager.wasPlayingBeforeLongPress = !video.paused;
                 StateManager.optionKeyState.isDown = true;
                 StateManager.optionKeyState.originalSpeed = video.playbackRate;
 
-                console.log('[YouTube倍速] Option键按下，记录原始速度:', StateManager.originalSpeed);
-
+                if (video.paused) video.play();
                 video.playbackRate = CONFIG.SPEED_KEY_OPTION;
                 OverlayModule.show(CONFIG.SPEED_KEY_OPTION);
                 SpeedControlModule.updateHighlight();
@@ -551,8 +604,9 @@
                     StateManager.isPressing = true;
                     StateManager.isLongPress = true;
                     StateManager.longPressTimer = null;
-                    console.log('[YouTube倍速] 右方向键长按触发，记录的原始速度:', StateManager.originalSpeed);
+                    StateManager.wasPlayingBeforeLongPress = !video.paused;
 
+                    if (video.paused) video.play();
                     video.playbackRate = CONFIG.SPEED_KEY_RIGHT;
                     OverlayModule.show(CONFIG.SPEED_KEY_RIGHT);
                     SpeedControlModule.updateHighlight();
@@ -575,7 +629,6 @@
 
                 if (StateManager.ctrlKeyState.isDown && video.playbackRate === CONFIG.SPEED_KEY_CTRL) {
                     if (checkCount % 10 === 0) {
-                        console.log('[YouTube倍速] Ctrl键轮询检查中...', checkCount / 10, '秒');
                     }
                     // 移除超时限制，允许无限期长按
                 } else if (!StateManager.ctrlKeyState.isDown) {
@@ -600,7 +653,6 @@
 
                 if (StateManager.optionKeyState.isDown && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
                     if (checkCount % 10 === 0) {
-                        console.log('[YouTube倍速] Option键轮询检查中...', checkCount / 10, '秒');
                     }
                     // 移除超时限制，允许无限期长按
                 } else if (!StateManager.optionKeyState.isDown) {
@@ -613,7 +665,6 @@
         handleKeyUp(e) {
             // 检查Ctrl键是否通过其他按键松开事件检测到
             if (StateManager.ctrlKeyState.isDown && !e.ctrlKey) {
-                console.log('[YouTube倍速] 通过keyup事件检测到Ctrl键已松开');
                 const video = DOMCache.getVideo();
                 if (video && video.playbackRate === CONFIG.SPEED_KEY_CTRL) {
                     KeyboardModule.restoreSpeed(video, StateManager.ctrlKeyState.originalSpeed);
@@ -623,7 +674,6 @@
 
             // 检查Option键是否通过其他按键松开事件检测到
             if (StateManager.optionKeyState.isDown && !e.altKey) {
-                console.log('[YouTube倍速] 通过keyup事件检测到Option键已松开');
                 const video = DOMCache.getVideo();
                 if (video && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
                     KeyboardModule.restoreSpeed(video, StateManager.optionKeyState.originalSpeed);
@@ -635,7 +685,6 @@
 
             const video = DOMCache.getVideo();
             if (!video) {
-                console.log('[YouTube倍速] 警告：找不到video元素');
                 return;
             }
 
@@ -644,7 +693,6 @@
 
             // Z键松开处理
             if (e.code === 'KeyZ') {
-                console.log('[YouTube倍速] Z键松开');
                 if (video.playbackRate === CONFIG.SPEED_KEY_Z) {
                     KeyboardModule.restoreSpeed(video, StateManager.originalSpeed);
                 }
@@ -653,7 +701,6 @@
 
             // Ctrl键松开处理
             if (e.code === 'ControlLeft' || e.code === 'ControlRight') {
-                console.log('[YouTube倍速] Ctrl键松开');
                 const speedToRestore = StateManager.ctrlKeyState.originalSpeed || StateManager.originalSpeed;
                 if (video.playbackRate === CONFIG.SPEED_KEY_CTRL) {
                     KeyboardModule.restoreSpeed(video, speedToRestore);
@@ -663,7 +710,6 @@
 
             // Option键松开处理
             if (e.code === 'AltLeft' || e.code === 'AltRight') {
-                console.log('[YouTube倍速] Option键松开');
                 const speedToRestore = StateManager.optionKeyState.originalSpeed || StateManager.originalSpeed;
                 if (video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
                     KeyboardModule.restoreSpeed(video, speedToRestore);
@@ -674,14 +720,12 @@
             // 右方向键松开处理
             if (e.code === 'ArrowRight') {
                 e.stopImmediatePropagation();
-                console.log('[YouTube倍速] 右方向键松开');
 
                 // 短按处理：执行快进
                 if (StateManager.longPressTimer) {
                     clearTimeout(StateManager.longPressTimer);
                     StateManager.longPressTimer = null;
                     StateManager.currentKey = null;
-                    console.log('[YouTube倍速] 短按右方向键，执行快进');
                     video.currentTime = Math.min(video.currentTime + CONFIG.SEEK_SECONDS, video.duration);
                     return;
                 }
@@ -1393,14 +1437,12 @@
         // 窗口失焦处理
         handleWindowBlur() {
             if (StateManager.ctrlKeyState.isDown) {
-                console.log('[YouTube倍速] 窗口失焦，强制恢复Ctrl键状态');
                 const video = DOMCache.getVideo();
                 if (video && video.playbackRate === CONFIG.SPEED_KEY_CTRL) {
                     KeyboardModule.restoreSpeed(video, StateManager.ctrlKeyState.originalSpeed);
                 }
             }
             if (StateManager.optionKeyState.isDown) {
-                console.log('[YouTube倍速] 窗口失焦，强制恢复Option键状态');
                 const video = DOMCache.getVideo();
                 if (video && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
                     KeyboardModule.restoreSpeed(video, StateManager.optionKeyState.originalSpeed);
@@ -1413,10 +1455,8 @@
             if (StateManager.ctrlKeyState.isDown) {
                 const video = DOMCache.getVideo();
                 if (video && video.playbackRate === CONFIG.SPEED_KEY_CTRL) {
-                    console.log('[YouTube倍速] 检测到鼠标点击，检查Ctrl键状态');
                     setTimeout(() => {
                         if (StateManager.ctrlKeyState.isDown && video.playbackRate === CONFIG.SPEED_KEY_CTRL) {
-                            console.log('[YouTube倍速] Ctrl键可能卡住，尝试恢复');
                             KeyboardModule.restoreSpeed(video, StateManager.ctrlKeyState.originalSpeed);
                         }
                     }, 100);
@@ -1425,10 +1465,8 @@
             if (StateManager.optionKeyState.isDown) {
                 const video = DOMCache.getVideo();
                 if (video && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
-                    console.log('[YouTube倍速] 检测到鼠标点击，检查Option键状态');
                     setTimeout(() => {
                         if (StateManager.optionKeyState.isDown && video.playbackRate === CONFIG.SPEED_KEY_OPTION) {
-                            console.log('[YouTube倍速] Option键可能卡住，尝试恢复');
                             KeyboardModule.restoreSpeed(video, StateManager.optionKeyState.originalSpeed);
                         }
                     }, 100);
