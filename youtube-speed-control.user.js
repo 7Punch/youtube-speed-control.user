@@ -7,6 +7,7 @@
 // @author       LQ He
 // @description  长按快捷键快速倍速播放（Z/Ctrl/Option 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。
 // @license      MIT
+// @icon         https://www.youtube.com/favicon.ico
 // @run-at       document-start
 // ==/UserScript==
 
