@@ -3,7 +3,7 @@
 // @namespace    Tampermonkey Scripts
 // @match        *://www.youtube.com/*
 // @grant        none
-// @version      1.6.8
+// @version      1.6.9
 // @author       LQ He
 // @description  长按快捷键快速倍速播放（Z/Ctrl/Option 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。
 // @license      MIT
@@ -132,6 +132,18 @@
             checkInterval: null
         },
 
+        arrowKeyState: {
+            isDown: false,
+            originalSpeed: 1.0,
+            checkInterval: null
+        },
+
+        /** 长按空格 / 长按画面前的 playbackRate（用于与右方向长按组合结束后回到真实倍速，而非 YouTube 临时 2 倍） */
+        rateBeforeSpaceHold: null,
+
+        /** 在画面上按下指针的 pointerId（仍按住时勿因松开空格而清空 rateBeforeSpaceHold） */
+        holdBaselinePointerId: null,
+
         speedOptions: [0.5, 1, 1.25, 1.5, 1.75, 2, 2.5, 3],
         customSpeeds: [],
 
@@ -144,6 +156,8 @@
                 clearTimeout(this.longPressTimer);
                 this.longPressTimer = null;
             }
+            this.rateBeforeSpaceHold = null;
+            this.holdBaselinePointerId = null;
         },
 
         resetCtrlState() {
@@ -159,6 +173,14 @@
             if (this.optionKeyState.checkInterval) {
                 clearInterval(this.optionKeyState.checkInterval);
                 this.optionKeyState.checkInterval = null;
+            }
+        },
+
+        resetArrowState() {
+            this.arrowKeyState.isDown = false;
+            if (this.arrowKeyState.checkInterval) {
+                clearInterval(this.arrowKeyState.checkInterval);
+                this.arrowKeyState.checkInterval = null;
             }
         }
     };
@@ -468,6 +490,62 @@
             return code === 'KeyZ' || code === 'ControlLeft' || code === 'ControlRight' || code === 'AltLeft' || code === 'AltRight' || code === 'ArrowRight';
         },
 
+        /** 与 YouTube「长按临时倍速」一致：在按住生效前记录当前 playbackRate */
+        captureRateBeforeYoutubeHold() {
+            const v = DOMCache.getVideo();
+            if (v && !(StateManager.isLongPress && StateManager.currentKey === 'ArrowRight')) {
+                StateManager.rateBeforeSpaceHold = v.playbackRate;
+            }
+        },
+
+        /** 松开空格或松开画面时清除快照；右方向长按中保留。若仍按住画面指针则不因松空格而清除 */
+        clearRateBeforeYoutubeHoldIfNeededOnRelease() {
+            if (StateManager.isLongPress && StateManager.currentKey === 'ArrowRight') {
+                return;
+            }
+            StateManager.rateBeforeSpaceHold = null;
+        },
+
+        /** 是否在播放器画面上长按（与长按空格触发 YouTube 临时倍速的区域一致，排除控制条与脚本控件） */
+        isPointerOnVideoHoldSurface(e) {
+            if (!e.isPrimary) return false;
+            if (e.pointerType === 'mouse' && e.button !== 0) return false;
+            const t = e.target;
+            if (!t || !t.closest) return false;
+            if (t.closest('.yt-speed-control')) return false;
+            if (t.closest('input, textarea, [contenteditable="true"]')) return false;
+            if (!t.closest('#movie_player')) return false;
+            if (t.closest(
+                '.ytp-chrome-bottom, .ytp-chrome-top, .ytp-progress-bar-container, .ytp-settings-menu, ' +
+                '.ytp-panel, .ytp-popup, .ytp-contextmenu, .ytp-share-panel, .ytp-cards-teaser, ' +
+                '.ytp-endscreen, .ytp-autonav-overlay, ytd-menu-popup-renderer, ytd-video-preview'
+            )) {
+                return false;
+            }
+            return true;
+        },
+
+        handlePointerDown(e) {
+            if (!KeyboardModule.isPointerOnVideoHoldSurface(e)) return;
+            StateManager.holdBaselinePointerId = e.pointerId;
+            KeyboardModule.captureRateBeforeYoutubeHold();
+        },
+
+        handlePointerUp(e) {
+            if (!e.isPrimary) return;
+            if (StateManager.holdBaselinePointerId !== e.pointerId) return;
+            StateManager.holdBaselinePointerId = null;
+            KeyboardModule.clearRateBeforeYoutubeHoldIfNeededOnRelease();
+        },
+
+        /** 右方向键长按结束时应恢复的倍速（优先用长按空格/画面前快照，避免把 YouTube 临时 2 倍当成恢复目标） */
+        resolveArrowLongPressRestoreSpeed() {
+            if (StateManager.rateBeforeSpaceHold != null) {
+                return StateManager.rateBeforeSpaceHold;
+            }
+            return StateManager.arrowKeyState.originalSpeed || StateManager.originalSpeed;
+        },
+
         // 恢复视频速度
         restoreSpeed(video, speed) {
             if (video) {
@@ -480,6 +558,7 @@
             StateManager.reset();
             StateManager.resetCtrlState();
             StateManager.resetOptionState();
+            StateManager.resetArrowState();
             OverlayModule.hide();
             SpeedControlModule.updateHighlight();
         },
@@ -507,6 +586,11 @@
         },
 
         handleKeyDown(e) {
+            // 记录长按空格前的倍速（仅首次按下，避免 key repeat 用已变成 2 倍的值覆盖）
+            if (e.code === 'Space' && !e.repeat && !KeyboardModule.shouldIgnoreEvent(e)) {
+                KeyboardModule.captureRateBeforeYoutubeHold();
+            }
+
             // 检查Ctrl键状态一致性
             KeyboardModule.checkCtrlKeyConsistency(e);
             // 检查Option键状态一致性
@@ -599,6 +683,8 @@
 
                 StateManager.currentKey = e.code;
                 StateManager.originalSpeed = video.playbackRate;
+                StateManager.arrowKeyState.isDown = true;
+                StateManager.arrowKeyState.originalSpeed = video.playbackRate;
                 StateManager.keyDownTime = Date.now();
 
                 StateManager.longPressTimer = setTimeout(() => {
@@ -611,8 +697,33 @@
                     video.playbackRate = CONFIG.SPEED_KEY_RIGHT;
                     OverlayModule.show(CONFIG.SPEED_KEY_RIGHT);
                     SpeedControlModule.updateHighlight();
+                    KeyboardModule.startArrowRightKeyCheck();
                 }, CONFIG.LONG_PRESS_DELAY);
             }
+        },
+
+        // 右方向键长按：YouTube 在松开空格等操作后会改回 playbackRate，需轮询维持倍速
+        startArrowRightKeyCheck() {
+            if (StateManager.arrowKeyState.checkInterval) {
+                clearInterval(StateManager.arrowKeyState.checkInterval);
+            }
+
+            StateManager.arrowKeyState.checkInterval = setInterval(() => {
+                const v = DOMCache.getVideo();
+                if (!v) return;
+
+                if (
+                    StateManager.arrowKeyState.isDown &&
+                    StateManager.isLongPress &&
+                    StateManager.currentKey === 'ArrowRight' &&
+                    v.playbackRate !== CONFIG.SPEED_KEY_RIGHT
+                ) {
+                    v.playbackRate = CONFIG.SPEED_KEY_RIGHT;
+                } else if (!StateManager.arrowKeyState.isDown) {
+                    clearInterval(StateManager.arrowKeyState.checkInterval);
+                    StateManager.arrowKeyState.checkInterval = null;
+                }
+            }, CONFIG.CTRL_CHECK_INTERVAL);
         },
 
         // Ctrl键状态检查（兜底机制）
@@ -664,6 +775,15 @@
         },
 
         handleKeyUp(e) {
+            // 松开空格时清除快照；右方向长按中保留；仍按住画面时保留（与 pointer 通道一致）
+            if (e.code === 'Space' && !KeyboardModule.shouldIgnoreEvent(e)) {
+                if (!(StateManager.isLongPress && StateManager.currentKey === 'ArrowRight')) {
+                    if (StateManager.holdBaselinePointerId === null) {
+                        StateManager.rateBeforeSpaceHold = null;
+                    }
+                }
+            }
+
             // 检查Ctrl键是否通过其他按键松开事件检测到
             if (StateManager.ctrlKeyState.isDown && !e.ctrlKey) {
                 const video = DOMCache.getVideo();
@@ -722,6 +842,8 @@
             if (e.code === 'ArrowRight') {
                 e.stopImmediatePropagation();
 
+                StateManager.arrowKeyState.isDown = false;
+
                 // 短按处理：执行快进
                 if (StateManager.longPressTimer) {
                     clearTimeout(StateManager.longPressTimer);
@@ -731,9 +853,9 @@
                     return;
                 }
 
-                // 长按处理：恢复速度
-                if (video.playbackRate === CONFIG.SPEED_KEY_RIGHT) {
-                    KeyboardModule.restoreSpeed(video, StateManager.originalSpeed);
+                // 长按处理：恢复速度（勿依赖 playbackRate：空格松开后可能被 YouTube 改掉，导致无法进入分支、浮层常显）
+                if (StateManager.isLongPress && StateManager.currentKey === 'ArrowRight') {
+                    KeyboardModule.restoreSpeed(video, KeyboardModule.resolveArrowLongPressRestoreSpeed());
                 }
             }
         }
@@ -1449,6 +1571,12 @@
                     KeyboardModule.restoreSpeed(video, StateManager.optionKeyState.originalSpeed);
                 }
             }
+            if (StateManager.arrowKeyState.isDown && StateManager.isLongPress && StateManager.currentKey === 'ArrowRight') {
+                const video = DOMCache.getVideo();
+                if (video) {
+                    KeyboardModule.restoreSpeed(video, KeyboardModule.resolveArrowLongPressRestoreSpeed());
+                }
+            }
         },
 
         // 鼠标点击处理（检测Ctrl键卡住）
@@ -1511,6 +1639,11 @@
                 // 注册键盘事件
                 document.addEventListener('keydown', KeyboardModule.handleKeyDown, true);
                 document.addEventListener('keyup', KeyboardModule.handleKeyUp, true);
+
+                // 长按画面与长按空格同为 YouTube 临时倍速：在按住前记录倍速快照
+                document.addEventListener('pointerdown', KeyboardModule.handlePointerDown, true);
+                document.addEventListener('pointerup', KeyboardModule.handlePointerUp, true);
+                document.addEventListener('pointercancel', KeyboardModule.handlePointerUp, true);
 
                 // 注册全局监听器（Ctrl键兜底机制）
                 window.addEventListener('blur', InitModule.handleWindowBlur, true);
