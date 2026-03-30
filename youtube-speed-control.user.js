@@ -3,7 +3,7 @@
 // @namespace    Tampermonkey Scripts
 // @match        *://www.youtube.com/*
 // @grant        none
-// @version      1.6.9
+// @version      1.6.10
 // @author       LQ He
 // @description  长按快捷键快速倍速播放（Z/Ctrl/Option 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。
 // @license      MIT
@@ -498,12 +498,26 @@
             }
         },
 
-        /** 松开空格或松开画面时清除快照；右方向长按中保留。若仍按住画面指针则不因松空格而清除 */
-        clearRateBeforeYoutubeHoldIfNeededOnRelease() {
+        /**
+         * 松开空格或松开画面时：用快照恢复 playbackRate（覆盖 YouTube 松手后回到 1 倍的行为），再清除快照。
+         * 右方向长按 3 倍进行中不执行，以免破坏与右方向组合用的基准。
+         */
+        finalizeYoutubeHoldBaseline() {
             if (StateManager.isLongPress && StateManager.currentKey === 'ArrowRight') {
                 return;
             }
+            const saved = StateManager.rateBeforeSpaceHold;
             StateManager.rateBeforeSpaceHold = null;
+            if (saved == null) return;
+            const v = DOMCache.getVideo();
+            if (!v) return;
+            const apply = () => {
+                v.playbackRate = saved;
+                SpeedControlModule.updateHighlight();
+            };
+            requestAnimationFrame(() => {
+                requestAnimationFrame(apply);
+            });
         },
 
         /** 是否在播放器画面上长按（与长按空格触发 YouTube 临时倍速的区域一致，排除控制条与脚本控件） */
@@ -535,7 +549,7 @@
             if (!e.isPrimary) return;
             if (StateManager.holdBaselinePointerId !== e.pointerId) return;
             StateManager.holdBaselinePointerId = null;
-            KeyboardModule.clearRateBeforeYoutubeHoldIfNeededOnRelease();
+            KeyboardModule.finalizeYoutubeHoldBaseline();
         },
 
         /** 右方向键长按结束时应恢复的倍速（优先用长按空格/画面前快照，避免把 YouTube 临时 2 倍当成恢复目标） */
@@ -775,11 +789,11 @@
         },
 
         handleKeyUp(e) {
-            // 松开空格时清除快照；右方向长按中保留；仍按住画面时保留（与 pointer 通道一致）
+            // 松开空格：恢复长按前倍速并清快照；右方向长按中保留；仍按住画面时不处理（等 pointerup）
             if (e.code === 'Space' && !KeyboardModule.shouldIgnoreEvent(e)) {
                 if (!(StateManager.isLongPress && StateManager.currentKey === 'ArrowRight')) {
                     if (StateManager.holdBaselinePointerId === null) {
-                        StateManager.rateBeforeSpaceHold = null;
+                        KeyboardModule.finalizeYoutubeHoldBaseline();
                     }
                 }
             }
