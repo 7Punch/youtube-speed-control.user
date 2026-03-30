@@ -3,7 +3,7 @@
 // @namespace    Tampermonkey Scripts
 // @match        *://www.youtube.com/*
 // @grant        none
-// @version      1.6.10
+// @version      1.6.11
 // @author       LQ He
 // @description  长按快捷键快速倍速播放（Z/Ctrl/Option 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。
 // @license      MIT
@@ -33,7 +33,10 @@
         // 性能优化配置
         CTRL_CHECK_INTERVAL: 100,
         CTRL_TIMEOUT_LIMIT: 50,
-        STORAGE_KEY: 'yt-custom-speed-options'
+        STORAGE_KEY: 'yt-custom-speed-options',
+
+        /** 工具栏与自定义倍速弹窗共用字体栈，与 YouTube 控制栏一致 */
+        UI_FONT_FAMILY: "'YouTube Sans', 'Roboto', Arial, sans-serif"
     };
 
     // ==================== 样式常量 ====================
@@ -71,7 +74,7 @@
             background: transparent !important;
             color: rgba(255, 255, 255, 0.9) !important;
             font-size: 13px !important;
-            font-family: 'YouTube Sans', 'Roboto', Arial, sans-serif !important;
+            font-family: ${CONFIG.UI_FONT_FAMILY} !important;
             font-weight: 400 !important;
             transition: opacity 0.1s ease-in-out !important;
             white-space: nowrap !important;
@@ -924,7 +927,7 @@
                     margin: 0 4px 0 0 !important;
                     color: #fff !important;
                     font-size: 13px !important;
-                    font-family: 'YouTube Sans', 'Roboto', Arial, sans-serif !important;
+                    font-family: ${CONFIG.UI_FONT_FAMILY} !important;
                     vertical-align: top !important;
                     flex-shrink: 0 !important;
                     position: relative !important;
@@ -1060,7 +1063,7 @@
                     background: transparent !important;
                     color: rgba(255, 255, 255, 0.7) !important;
                     font-size: 16px !important;
-                    font-family: 'YouTube Sans', 'Roboto', Arial, sans-serif !important;
+                    font-family: ${CONFIG.UI_FONT_FAMILY} !important;
                     transition: all 0.2s ease-in-out !important;
                     white-space: nowrap !important;
                     flex-shrink: 0 !important;
@@ -1122,7 +1125,7 @@
                 z-index: 10000 !important;
                 // color: #fff !important;
                 color: rgba(255, 255, 255, 0.9) !important;
-                font-family: Roboto, Arial, sans-serif !important;
+                font-family: ${CONFIG.UI_FONT_FAMILY} !important;
             `;
 
                 // 添加新倍速区域 - 滑块样式(放在顶部)
@@ -1505,6 +1508,9 @@
             const style = document.createElement('style');
             style.id = 'yt-speed-styles';
             style.textContent = `
+            .yt-speed-edit-panel {
+                font-family: ${CONFIG.UI_FONT_FAMILY} !important;
+            }
             .ytp-right-controls-left {
                 overflow: visible !important;
                 flex-shrink: 0 !important;
