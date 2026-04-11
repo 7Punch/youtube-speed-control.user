@@ -3,7 +3,7 @@
 // @namespace    Tampermonkey Scripts
 // @match        *://www.youtube.com/*
 // @grant        none
-// @version      1.6.11
+// @version      1.6.12
 // @author       LQ He
 // @description  长按快捷键快速倍速播放（Z/Ctrl/Option 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。
 // @license      MIT
@@ -91,7 +91,42 @@
         player: null,
         speedControl: null,
 
+        /** Shorts 为竖屏流，DOM 内常有多个 video；不可长期缓存首个 querySelector('video')。 */
+        isShortsPath() {
+            return location.pathname.startsWith('/shorts/');
+        },
+
+        /**
+         * 当前 Short 对应的 video：优先正在播放的，否则取视口内面积最大的 reel 内视频。
+         */
+        findActiveShortsVideo() {
+            const reelVideos = document.querySelectorAll(
+                'ytd-reel-video-renderer video.html5-main-video, ytd-reel-video-renderer video'
+            );
+            if (reelVideos.length === 0) {
+                return document.querySelector('video.html5-main-video') || document.querySelector('video');
+            }
+            const list = Array.from(reelVideos);
+            const playing = list.find(v => !v.paused && !v.ended);
+            if (playing) return playing;
+            let best = null;
+            let bestArea = 0;
+            for (const v of list) {
+                const r = v.getBoundingClientRect();
+                const area = r.width * r.height;
+                if (area > bestArea && r.width > 0 && r.height > 0) {
+                    bestArea = area;
+                    best = v;
+                }
+            }
+            return best || list[0];
+        },
+
         getVideo() {
+            if (this.isShortsPath()) {
+                this.video = this.findActiveShortsVideo();
+                return this.video;
+            }
             if (!this.video || !document.contains(this.video)) {
                 this.video = document.querySelector('video');
             }
@@ -99,6 +134,13 @@
         },
 
         getPlayer() {
+            if (this.isShortsPath()) {
+                const v = this.findActiveShortsVideo();
+                this.player = v
+                    ? (v.closest('.html5-video-player') || v.closest('ytd-reel-video-renderer'))
+                    : null;
+                return this.player;
+            }
             if (!this.player || !document.contains(this.player)) {
                 this.player = document.querySelector('#movie_player');
             }
