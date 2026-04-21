@@ -3,7 +3,7 @@
 // @namespace    Tampermonkey Scripts
 // @match        *://www.youtube.com/*
 // @grant        none
-// @version      1.6.13
+// @version      1.6.14
 // @author       LQ He
 // @description  长按快捷键快速倍速播放（Z/Ctrl/Option 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。Shorts 页左方向键快退（与右方向短按快进同为 5 秒）。
 // @license      MIT
@@ -151,6 +151,35 @@
             this.video = null;
             this.player = null;
             this.speedControl = null;
+        }
+    };
+
+    /**
+     * 优先通过 YouTube 播放器 setPlaybackRate（与网页原生倍速一致，利于字幕同步），
+     * 若播放器不支持目标倍速或未实现 API，再补写 video.playbackRate。
+     */
+    const PlaybackRateBridge = {
+        approxEq(a, b) {
+            return Math.abs(Number(a) - Number(b)) < 0.001;
+        },
+
+        set(video, speed) {
+            if (!video || typeof speed !== 'number' || Number.isNaN(speed)) return;
+            const player = DOMCache.getPlayer();
+            if (player && typeof player.setPlaybackRate === 'function') {
+                try {
+                    player.setPlaybackRate(speed);
+                } catch (e) {
+                    // 忽略，改由 video 兜底
+                }
+            }
+            try {
+                if (!PlaybackRateBridge.approxEq(video.playbackRate, speed)) {
+                    video.playbackRate = speed;
+                }
+            } catch (e) {
+                // 忽略
+            }
         }
     };
 
@@ -557,7 +586,7 @@
             const v = DOMCache.getVideo();
             if (!v) return;
             const apply = () => {
-                v.playbackRate = saved;
+                PlaybackRateBridge.set(v, saved);
                 SpeedControlModule.updateHighlight();
             };
             requestAnimationFrame(() => {
@@ -608,7 +637,7 @@
         // 恢复视频速度
         restoreSpeed(video, speed) {
             if (video) {
-                video.playbackRate = speed;
+                PlaybackRateBridge.set(video, speed);
                 // 若长按前视频处于暂停状态，松开后重新暂停
                 if (StateManager.wasPlayingBeforeLongPress === false) {
                     video.pause();
@@ -694,7 +723,7 @@
                 StateManager.wasPlayingBeforeLongPress = !video.paused;
 
                 if (video.paused) video.play();
-                video.playbackRate = CONFIG.SPEED_KEY_Z;
+                PlaybackRateBridge.set(video, CONFIG.SPEED_KEY_Z);
                 OverlayModule.show(CONFIG.SPEED_KEY_Z);
                 SpeedControlModule.updateHighlight();
                 return;
@@ -716,7 +745,7 @@
                 StateManager.ctrlKeyState.originalSpeed = video.playbackRate;
 
                 if (video.paused) video.play();
-                video.playbackRate = CONFIG.SPEED_KEY_CTRL;
+                PlaybackRateBridge.set(video, CONFIG.SPEED_KEY_CTRL);
                 OverlayModule.show(CONFIG.SPEED_KEY_CTRL);
                 SpeedControlModule.updateHighlight();
 
@@ -741,7 +770,7 @@
                 StateManager.optionKeyState.originalSpeed = video.playbackRate;
 
                 if (video.paused) video.play();
-                video.playbackRate = CONFIG.SPEED_KEY_OPTION;
+                PlaybackRateBridge.set(video, CONFIG.SPEED_KEY_OPTION);
                 OverlayModule.show(CONFIG.SPEED_KEY_OPTION);
                 SpeedControlModule.updateHighlight();
 
@@ -773,7 +802,7 @@
                     StateManager.wasPlayingBeforeLongPress = !video.paused;
 
                     if (video.paused) video.play();
-                    video.playbackRate = CONFIG.SPEED_KEY_RIGHT;
+                    PlaybackRateBridge.set(video, CONFIG.SPEED_KEY_RIGHT);
                     OverlayModule.show(CONFIG.SPEED_KEY_RIGHT);
                     SpeedControlModule.updateHighlight();
                     KeyboardModule.startArrowRightKeyCheck();
@@ -797,7 +826,7 @@
                     StateManager.currentKey === 'ArrowRight' &&
                     v.playbackRate !== CONFIG.SPEED_KEY_RIGHT
                 ) {
-                    v.playbackRate = CONFIG.SPEED_KEY_RIGHT;
+                    PlaybackRateBridge.set(v, CONFIG.SPEED_KEY_RIGHT);
                 } else if (!StateManager.arrowKeyState.isDown) {
                     clearInterval(StateManager.arrowKeyState.checkInterval);
                     StateManager.arrowKeyState.checkInterval = null;
@@ -955,7 +984,7 @@
                 e.stopPropagation();
                 const video = DOMCache.getVideo();
                 if (video) {
-                    video.playbackRate = speed;
+                    PlaybackRateBridge.set(video, speed);
                     StateManager.originalSpeed = speed;
                     SpeedControlModule.highlightOption(option);
                 }
