@@ -3,9 +3,9 @@
 // @namespace    Tampermonkey Scripts
 // @match        *://www.youtube.com/*
 // @grant        none
-// @version      1.6.12
+// @version      1.6.13
 // @author       LQ He
-// @description  长按快捷键快速倍速播放（Z/Ctrl/Option 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。
+// @description  长按快捷键快速倍速播放（Z/Ctrl/Option 2倍速，右方向键 3倍速）。视频控制栏添加倍速切换按钮，支持自定义倍速设置。YouTube 链接强制新标签页打开。Shorts 页左方向键快退（与右方向短按快进同为 5 秒）。
 // @license      MIT
 // @icon         https://www.youtube.com/favicon.ico
 // @run-at       document-start
@@ -654,6 +654,26 @@
             KeyboardModule.checkCtrlKeyConsistency(e);
             // 检查Option键状态一致性
             KeyboardModule.checkOptionKeyConsistency(e);
+
+            // Shorts：左方向键快退（与右方向键短按快进对称，避免 Shorts 内无原生快退）
+            if (
+                e.code === 'ArrowLeft' &&
+                DOMCache.isShortsPath() &&
+                !KeyboardModule.shouldIgnoreEvent(e) &&
+                !e.altKey &&
+                !e.ctrlKey &&
+                !e.metaKey &&
+                !e.shiftKey
+            ) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                const v = DOMCache.getVideo();
+                if (v) {
+                    v.currentTime = Math.max(0, v.currentTime - CONFIG.SEEK_SECONDS);
+                }
+                return;
+            }
 
             if (!KeyboardModule.isValidKey(e.code) || KeyboardModule.shouldIgnoreEvent(e)) return;
 
